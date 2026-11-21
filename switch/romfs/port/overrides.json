@@ -1,0 +1,9 @@
+{
+  "borders": [
+    { "image": "borders/depths_loop.png", "room": "main", "when": ["location == 1", "loop > 0"] },
+    { "image": "borders/city_loop.png",   "room": "main", "when": ["loop > 0"] },
+    { "image": "borders/depths.png",      "room": "main", "when": ["location == 1"] },
+    { "image": "borders/city.png",        "room": "main" },
+    { "image": "borders/menu.png" }
+  ]
+}

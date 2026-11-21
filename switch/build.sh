@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds SpamtonSubplot.nro (Nintendo Switch homebrew) from the game's data.win
-# using the open source Butterscotch GameMaker runner.
+# using the open source Butterscotch GameMaker runner plus this port's patch.
 #
-# Requires devkitPro with the Switch toolchain (devkitA64 + libnx + switch-sdl2 + switch-mesa).
+# Requires devkitPro with the Switch toolchain (devkitA64, libnx, switch-sdl2, switch-mesa, switch-ffmpeg).
 # The easiest way is the official container:
 #   docker run --rm -v "$PWD":/work -w /work devkitpro/devkita64:latest bash switch/build.sh
 set -euo pipefail
@@ -11,9 +11,8 @@ BUTTERSCOTCH_REPO="https://github.com/ButterscotchRunner/Butterscotch"
 BUTTERSCOTCH_COMMIT="a487150fd004d47be1f34157e543cec253bd993b"
 
 APP_NAME="Spamton Subplot"
-APP_AUTHOR="Spamton Subplot fan game (Butterscotch port)"
-APP_VERSION="2.0.0"
-SAVE_DIR="sdmc:/switch/spamton_subplot"
+APP_AUTHOR="SaRlow (Switch port: Butterscotch)"
+APP_VERSION="3.5"
 
 : "${DEVKITPRO:=/opt/devkitpro}"
 export DEVKITPRO
@@ -37,12 +36,9 @@ git -C "$SRC" fetch -q --depth 1 origin "$BUTTERSCOTCH_COMMIT"
 git -C "$SRC" checkout -q --force FETCH_HEAD
 git -C "$SRC" clean -qfdx
 
-# 2. Port-specific changes: keep saves in our own folder instead of the generic one.
-MAIN_C="$SRC/src/switch/main.c"
-grep -q 'args.saveFolder = "sdmc:/switch/butterscotch";' "$MAIN_C" \
-    || { echo "error: save folder line not found in $MAIN_C, update the patch" >&2; exit 1; }
-sed -i "s|args.saveFolder = \"sdmc:/switch/butterscotch\";|args.saveFolder = \"$SAVE_DIR\";|" "$MAIN_C"
-sed -i "s|\"sdmc:/switch/butterscotch/data.win\"|\"$SAVE_DIR/data.win\"|" "$MAIN_C"
+# 2. Port changes: font_add and other missing builtins, native resolution, asset overrides
+#    (borders, Switch controls, translations), Switch button layout and save folder.
+git -C "$SRC" apply --whitespace=nowarn "$ROOT/switch/patches/butterscotch-port.patch"
 
 # 3. Build the runner ELF.
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
@@ -51,17 +47,18 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 cmake --build "$BUILD"
 
-ELF="$(find "$BUILD" -maxdepth 1 -name 'butterscotch*.elf' | head -n 1)"
-[ -n "$ELF" ] || { echo "error: butterscotch ELF not found in $BUILD" >&2; exit 1; }
+ELF="$BUILD/butterscotch.elf"
+[ -f "$ELF" ] || { echo "error: $ELF was not built" >&2; exit 1; }
 
-# 4. RomFS: everything the game reads at runtime, next to data.win.
+# 4. RomFS: everything the game reads at runtime next to data.win, plus the port's own assets.
 rm -rf "$ROMFS"
 mkdir -p "$ROMFS"
 for f in data.win audio_music.dat font.otf keybinds.txt options.ini; do
     cp "$ROOT/$f" "$ROMFS/$f"
 done
+cp -r "$ROOT/switch/romfs/." "$ROMFS/"
 
-# 5. Package the NRO with our name, author, version and icon.
+# 5. Package the NRO with name, author, version and icon.
 "$TOOLS/nacptool" --create "$APP_NAME" "$APP_AUTHOR" "$APP_VERSION" "$WORK/app.nacp"
 "$TOOLS/elf2nro" "$ELF" "$DIST/SpamtonSubplot.nro" \
     --icon="$ROOT/switch/icon.jpg" \
