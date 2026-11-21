@@ -10,16 +10,19 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: devkitpro/devkita64:latest
+    env:
+      # NSP/NSZ packing needs the owner's console keys, stored as the PROD_KEYS repository secret.
+      HAS_KEYS: ${{ secrets.PROD_KEYS != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build tools
-        run: apt-get update && apt-get install -y --no-install-recommends git ninja-build
+        run: apt-get update && apt-get install -y --no-install-recommends git ninja-build build-essential python3-pip
 
-      - name: Build SpamtonSubplot.nro
+      - name: Build NRO and the NSP kit
         env:
           DEVKITPRO: /opt/devkitpro
-        run: bash switch/build.sh
+        run: bash switch/build_nsz.sh
 
       - name: Upload NRO
         uses: actions/upload-artifact@v4
@@ -38,3 +41,34 @@ jobs:
         with:
           name: SpamtonSubplot-SD-card-RU
           path: sd-ru/
+
+      - name: Upload NSP kit (build the NSZ on a PC with your own keys)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpamtonSubplot-nsp-kit
+          path: dist/SpamtonSubplot-nsp-kit.zip
+
+      # Runs only when started by hand (Actions -> Run workflow) and the PROD_KEYS secret is set.
+      - name: Build NSP and NSZ
+        if: env.HAS_KEYS == 'true' && github.event_name == 'workflow_dispatch'
+        env:
+          DEVKITPRO: /opt/devkitpro
+          PROD_KEYS_CONTENT: ${{ secrets.PROD_KEYS }}
+        run: |
+          git clone -q https://github.com/xitrix/hacbrewpack /tmp/hacbrewpack
+          git -C /tmp/hacbrewpack checkout -q 745b16ecfc9ce055743067d200572204cb2aac6c
+          make -s -C /tmp/hacbrewpack
+          pip3 install -q --break-system-packages nsz==5.0.0
+          umask 077
+          printf '%s\n' "$PROD_KEYS_CONTENT" > /tmp/prod.keys
+          SKIP_RUNNER_BUILD=1 HACBREWPACK=/tmp/hacbrewpack/hacbrewpack bash switch/build_nsz.sh /tmp/prod.keys
+          rm -f /tmp/prod.keys "$HOME/.switch/prod.keys"
+
+      - name: Upload NSZ
+        if: env.HAS_KEYS == 'true' && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpamtonSubplot-NSZ
+          path: |
+            dist/*.nsz
+            dist/*.nsp

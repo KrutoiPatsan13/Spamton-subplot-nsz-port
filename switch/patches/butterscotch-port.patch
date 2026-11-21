@@ -778,10 +778,20 @@ index 35a2b46..a398bef 100644
  
  void Random_setSeed(Random* m, uint32_t seed);
 diff --git a/src/switch/main.c b/src/switch/main.c
-index 9b4d009..48603cb 100644
+index 9b4d009..b357bec 100644
 --- a/src/switch/main.c
 +++ b/src/switch/main.c
-@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
+@@ -18,6 +18,9 @@ int main(int argc, char* argv[]) {
+     setbuf(stderr, NULL);
+ 
+     fsdevMountSdmc();
++    // Installed as a title there may be no NRO folder yet: make sure the save folder exists.
++    mkdir("sdmc:/switch", 0777);
++    mkdir("sdmc:/switch/spamton_subplot", 0777);
+ 
+     bool hasDataWinInRomfs = false;
+     Result rc = romfsInit();
+@@ -34,6 +37,7 @@ int main(int argc, char* argv[]) {
      args.traceBytecodeAfterFrame = 0;
  #endif
      args.speedMultiplier = 1.0;
@@ -789,7 +799,7 @@ index 9b4d009..48603cb 100644
      args.fastForwardSpeed = 0.0;
      args.osType = OS_WINDOWS;
      args.profilerFramesBetween = 0;
-@@ -43,8 +44,8 @@ int main(int argc, char* argv[]) {
+@@ -43,10 +47,11 @@ int main(int argc, char* argv[]) {
  #else
      args.renderer = SOFTWARE;
  #endif
@@ -798,8 +808,12 @@ index 9b4d009..48603cb 100644
 +    args.dataWinPath = hasDataWinInRomfs ? "romfs:/data.win" : "sdmc:/switch/spamton_subplot/data.win";
 +    args.saveFolder = "sdmc:/switch/spamton_subplot";
  
-     int ret = loop(args, argv[0]);
+-    int ret = loop(args, argv[0]);
++    // Installed as a title (NSP/NSZ) the app may start without any arguments.
++    int ret = loop(args, (argc > 0 && argv != nullptr) ? argv[0] : nullptr);
      freeCommandLineArgs(&args);
+     if (usingRomfs) romfsExit();
+     fsdevUnmountAll();
 diff --git a/src/switch/switch_input.c b/src/switch/switch_input.c
 index e08b030..84c21a9 100644
 --- a/src/switch/switch_input.c

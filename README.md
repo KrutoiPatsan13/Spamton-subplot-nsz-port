@@ -16,6 +16,17 @@
 
 Сохранения лежат на SD-карте в `/switch/spamton_subplot/`.
 
+## Установка как игра (NSZ для DBI)
+
+Порт можно установить как обычную игру: иконка на главном экране, запуск без Homebrew Menu и вся память консоли. Title ID — `01a57b0758b70000`, работает на любой Switch с Atmosphère и сигпатчами.
+
+NSP/NSZ шифруются ключами консоли, а их нельзя распространять, поэтому финальная упаковка делается вашими ключами (`prod.keys` из Lockpick_RCM) одним из двух способов:
+
+- **На ПК:** скачайте артефакт `SpamtonSubplot-nsp-kit`, положите рядом `prod.keys` и `hacbrewpack.exe`, запустите `make_nsz.bat` (или `make_nsz_ru.bat` — с русификатором). Подробно — в [switch/nsp/README.md](switch/nsp/README.md).
+- **На GitHub:** добавьте секрет репозитория `PROD_KEYS` с содержимым `prod.keys` и запустите **Actions → Build Switch NRO → Run workflow**. Готовые `.nsz` будут в артефакте `SpamtonSubplot-NSZ`.
+
+Сохранения у NSZ и NRO общие: `/switch/spamton_subplot/` на SD-карте.
+
 ## Русификатор
 
 Лежит в папке [`russian/`](russian/): скопируйте папку `russian/lang` на SD-карту в `/switch/spamton_subplot/`. Подробности — в [russian/README.md](russian/README.md).
