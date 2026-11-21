@@ -1,3 +1,92 @@
+diff --git a/src/audio/openal/al_audio_system.c b/src/audio/openal/al_audio_system.c
+index 6590ac6..f9da275 100644
+--- a/src/audio/openal/al_audio_system.c
++++ b/src/audio/openal/al_audio_system.c
+@@ -683,7 +683,8 @@ static int32_t maPlaySound(AudioSystem* audio, int32_t soundIndex, int32_t prior
+ 
+         if (inAudo) {
+            // Embedded audio: decode from AUDO chunk memory
+-            if (0 > sound->audioFile || (uint32_t) sound->audioFile >= ma->base.audioGroups[sound->audioGroup]->audo.count) {
++            if (0 > sound->audioGroup || sound->audioGroup >= arrlen(ma->base.audioGroups) ||
++                0 > sound->audioFile || (uint32_t) sound->audioFile >= ma->base.audioGroups[sound->audioGroup]->audo.count) {
+                 logWarn("Audio: Invalid audio file index %d for sound '%s'\n", sound->audioFile, sound->name);
+                 alDeleteSources(1, &slot->alSource);
+                 alDeleteBuffers(1, &slot->alBuffer);
+@@ -1284,6 +1285,7 @@ static float maGetSoundLength(AudioSystem* audio, int32_t soundOrInstance) {
+     bool isCompressed = (sound->flags & AUDIO_ENTRY_FLAG_IS_COMPRESSED) != 0;
+     bool inAudo = !isRegular || isEmbedded || isCompressed;
+     if (inAudo) {
++        if (0 > sound->audioGroup || sound->audioGroup >= arrlen(ma->base.audioGroups)) return 0.0f;
+         if (0 > sound->audioFile || (uint32_t) sound->audioFile >= ma->base.audioGroups[sound->audioGroup]->audo.count) return 0.0f;
+         DataWin_loadAudoIfNeeded(ma->base.audioGroups[sound->audioGroup], (uint32_t)sound->audioFile);
+         AudioEntry* entry = &ma->base.audioGroups[sound->audioGroup]->audo.entries[sound->audioFile];
+@@ -1337,29 +1339,48 @@ static void maSetGroupGain(AudioSystem* audio, int32_t groupIndex, float gain, u
+ }
+ 
+ static void maGroupLoad(AudioSystem* audio, int32_t groupIndex) {
+-    if (groupIndex > 0) {
++    if (groupIndex <= 0) return;
++    if (arrlen(audio->audioGroups) > groupIndex) return; // already loaded
++
++    // Keep audioGroups index-aligned with the AGRP chunk: fill any earlier gaps with empty placeholders.
++    while (arrlen(audio->audioGroups) < groupIndex) {
++        DataWin* empty = (DataWin *)safeCalloc(1, sizeof(DataWin));
++        arrput(audio->audioGroups, empty);
++    }
++
++    // GameMaker 2024+ stores each group's file name in AGRP (for example "audio_music.dat");
++    // older games use "audiogroup<N>.dat".
++    char* buf;
++    if (audio->dw->agrp.count > (uint32_t) groupIndex && audio->dw->agrp.audioGroups[groupIndex].path != nullptr) {
++        buf = safeStrdup(audio->dw->agrp.audioGroups[groupIndex].path);
++    } else {
+         int sz = snprintf(nullptr, 0, "audiogroup%d.dat", groupIndex);
+-        char *buf = (char *)safeMalloc(sz + 1);
++        buf = (char *)safeMalloc(sz + 1);
+         snprintf(buf, sz + 1, "audiogroup%d.dat", groupIndex);
++    }
+ 
+-        // The original runner does not care if the file doesn't exist (this may happen if someone uses "audio_group_load" on a non-existent group)
+-        FileSystem* fileSystem = ((AlAudioSystem*)audio)->fileSystem;
+-        char* resolvedPath = (((AlAudioSystem*)audio)->fileSystem->vtable->resolvePath(((AlAudioSystem*)audio)->fileSystem, buf));
+-        if (!fileSystem->vtable->fileExists(fileSystem, resolvedPath)) {
+-            logWarn("Audio: Wanted to load Audio Group %d, but Audio Group %d does not exist!\n", groupIndex, groupIndex);
+-            free(buf);
+-            return;
+-        }
+-
+-        DataWinParserOptions options = {0};
+-        options.parseAudo = true;
+-        options.lazyLoadAudio = audio->dw->lazyLoadAudio;
+-        if (audio->dw->mappedFile)
+-            options.loadType = DATAWINLOADTYPE_MAP_FILE;
+-        DataWin *audioGroup = DataWin_parse(((AlAudioSystem*)audio)->fileSystem->vtable->resolvePath(((AlAudioSystem*)audio)->fileSystem, buf), options);
+-        arrput(audio->audioGroups, audioGroup);
++    // The original runner does not care if the file doesn't exist (this may happen if someone uses "audio_group_load" on a non-existent group).
++    // Push an empty placeholder anyway, so audioGroups[groupIndex] is always valid for the play paths.
++    FileSystem* fileSystem = ((AlAudioSystem*)audio)->fileSystem;
++    char* resolvedPath = fileSystem->vtable->resolvePath(fileSystem, buf);
++    if (!fileSystem->vtable->fileExists(fileSystem, resolvedPath)) {
++        logWarn("Audio: Wanted to load Audio Group %d (%s), but it does not exist!\n", groupIndex, buf);
++        DataWin* empty = (DataWin *)safeCalloc(1, sizeof(DataWin));
++        arrput(audio->audioGroups, empty);
++        free(resolvedPath);
+         free(buf);
++        return;
+     }
++
++    DataWinParserOptions options = {0};
++    options.parseAudo = true;
++    options.lazyLoadAudio = audio->dw->lazyLoadAudio;
++    if (audio->dw->mappedFile)
++        options.loadType = DATAWINLOADTYPE_MAP_FILE;
++    DataWin *audioGroup = DataWin_parse(resolvedPath, options);
++    arrput(audio->audioGroups, audioGroup);
++    free(resolvedPath);
++    free(buf);
+ }
+ 
+ static bool maGroupIsLoaded(MAYBE_UNUSED AudioSystem* audio, MAYBE_UNUSED int32_t groupIndex) {
 diff --git a/src/cli/args.c b/src/cli/args.c
 index 92eab79..53bbb70 100644
 --- a/src/cli/args.c
