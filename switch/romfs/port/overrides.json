@@ -1,4 +1,12 @@
 {
+  "strings": {
+    "RT, RB OR LSTICK FOR DASH ATTACK WITH INVINCIBILITY": "ZR, R OR LSTICK FOR DASH ATTACK WITH INVINCIBILITY",
+    "PROCEED (SPACE)": "PROCEED (B)",
+    "EXIT TO DESKTOP": "EXIT GAME"
+  },
+  "sprites": {
+    "spr_tutorial": { "0": "sprites/spr_tutorial_switch.png", "1": "sprites/spr_tutorial_switch.png" }
+  },
   "borders": [
     { "image": "borders/depths_loop.png", "room": "main", "when": ["location == 1", "loop > 0"] },
     { "image": "borders/city_loop.png",   "room": "main", "when": ["loop > 0"] },
