@@ -30,10 +30,10 @@ index 92eab79..53bbb70 100644
                  break;
 diff --git a/src/font_add.c b/src/font_add.c
 new file mode 100644
-index 0000000..b33f360
+index 0000000..9aaf233
 --- /dev/null
 +++ b/src/font_add.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,211 @@
 +#include "font_add.h"
 +
 +#include <math.h>
@@ -184,6 +184,10 @@ index 0000000..b33f360
 +        out->sourceHeight = (uint16_t) lineHeight;
 +        out->shift = (int16_t) g->advance;
 +        out->offset = (int16_t) g->x0;
++        // Some fan-made glyphs (the wide Cyrillic letters in "Determination RUS") start far left of the origin and
++        // leave the gap on the right instead. Start those at the pen position so they neither overlap the previous
++        // letter nor leave a hole after themselves.
++        if ((float) g->x0 < -0.1f * pixelSize && g->x1 - g->x0 <= g->advance) out->offset = 0;
 +        out->kerningCount = 0;
 +        out->kerning = nullptr;
 +        if ((uint32_t) lineHeight > maxGlyphHeight) maxGlyphHeight = (uint32_t) lineHeight;
@@ -374,10 +378,10 @@ index 221170b..07953ce 100644
      StringBooleanEntry* eagerRooms; // stb_ds string-keyed set of room names
 diff --git a/src/port_overrides.c b/src/port_overrides.c
 new file mode 100644
-index 0000000..d1e54cd
+index 0000000..9dce19a
 --- /dev/null
 +++ b/src/port_overrides.c
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,339 @@
 +#include "port_overrides.h"
 +
 +#include <stdio.h>
@@ -471,12 +475,12 @@ index 0000000..d1e54cd
 +    return tpag;
 +}
 +
-+static Sprite* findSprite(DataWin* dw, const char* name) {
++static int32_t findSprite(DataWin* dw, const char* name) {
 +    repeat(dw->sprt.count, i) {
 +        Sprite* s = &dw->sprt.sprites[i];
-+        if (s->name != nullptr && strcmp(s->name, name) == 0) return s;
++        if (s->name != nullptr && strcmp(s->name, name) == 0) return (int32_t) i;
 +    }
-+    return nullptr;
++    return -1;
 +}
 +
 +static bool parseCondition(Runner* runner, const char* text, BorderCondition* out) {
@@ -548,8 +552,9 @@ index 0000000..d1e54cd
 +        for (int i = 0; count > i; i++) {
 +            const char* spriteName = JsonReader_getJsonKeyByIndex(sprites, i);
 +            JsonValue* frames = JsonReader_getJsonValueByIndex(sprites, i);
-+            Sprite* sprite = findSprite(dw, spriteName);
-+            if (sprite == nullptr || frames == nullptr || !JsonReader_isObject(frames)) {
++            // Keep the index, not a pointer: uploading an image adds a dynamic sprite, which can move the array.
++            int32_t spriteIndex = findSprite(dw, spriteName);
++            if (0 > spriteIndex || frames == nullptr || !JsonReader_isObject(frames)) {
 +                logWarn("Port: unknown sprite %s in %s/overrides.json\n", spriteName, dir);
 +                continue;
 +            }
@@ -557,12 +562,12 @@ index 0000000..d1e54cd
 +            for (int f = 0; frameCount > f; f++) {
 +                int frame = atoi(JsonReader_getJsonKeyByIndex(frames, f));
 +                JsonValue* file = JsonReader_getJsonValueByIndex(frames, f);
-+                if (0 > frame || (uint32_t) frame >= sprite->textureCount || file == nullptr || !JsonReader_isString(file)) continue;
++                if (0 > frame || (uint32_t) frame >= dw->sprt.sprites[spriteIndex].textureCount || file == nullptr || !JsonReader_isString(file)) continue;
 +                char* path = joinPath(dir, JsonReader_getString(file));
 +                int32_t tpag = loadImage(runner, path, nullptr, nullptr);
 +                free(path);
 +                if (0 > tpag) continue;
-+                sprite->tpagIndices[frame] = tpag;
++                dw->sprt.sprites[spriteIndex].tpagIndices[frame] = tpag;
 +                framesReplaced++;
 +            }
 +        }
