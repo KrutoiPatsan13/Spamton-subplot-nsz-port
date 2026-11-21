@@ -26,3 +26,15 @@ jobs:
         with:
           name: SpamtonSubplot-switch
           path: dist/SpamtonSubplot.nro
+
+      - name: Lay out the SD card with the Russian translation
+        run: |
+          mkdir -p sd-ru/switch/spamton_subplot
+          cp dist/SpamtonSubplot.nro sd-ru/switch/spamton_subplot/
+          cp -r russian/lang sd-ru/switch/spamton_subplot/
+
+      - name: Upload SD card layout (Russian)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpamtonSubplot-SD-card-RU
+          path: sd-ru/

@@ -10,7 +10,7 @@
 
 ## Установка
 
-1. Скачайте `SpamtonSubplot.nro` (вкладка **Actions** → последний запуск **Build Switch NRO** → артефакт `SpamtonSubplot-switch`).
+1. Скачайте `SpamtonSubplot.nro` (вкладка **Actions** → последний запуск **Build Switch NRO** → артефакт `SpamtonSubplot-switch`). Артефакт `SpamtonSubplot-SD-card-RU` — то же самое вместе с русификатором, уже разложенное по папкам SD-карты: просто скопируйте его содержимое в корень карты.
 2. Скопируйте его на SD-карту в папку `/switch/spamton_subplot/`.
 3. Запустите через Homebrew Menu. Лучше в режиме полного доступа к памяти: удерживайте **R**, запуская любую установленную игру.
 
