@@ -87,6 +87,24 @@ index 6590ac6..f9da275 100644
  }
  
  static bool maGroupIsLoaded(MAYBE_UNUSED AudioSystem* audio, MAYBE_UNUSED int32_t groupIndex) {
+diff --git a/src/backends/sdl2.c b/src/backends/sdl2.c
+index e61be06..133a256 100644
+--- a/src/backends/sdl2.c
++++ b/src/backends/sdl2.c
+@@ -169,6 +169,13 @@ void platformSetWindowSize(int32_t width, int32_t height) {
+ 
+     if (gfx == SOFTWARE)
+         scr = SDL_GetWindowSurface(window);
++#ifdef PLATFORM_SWITCH
++    int ww = 0, wh = 0, dw = 0, dh = 0;
++    SDL_GetWindowSize(window, &ww, &wh);
++    SDL_GL_GetDrawableSize(window, &dw, &dh);
++    logInfo("Window: mode %s, requested %dx%d (scale %.3f), window %dx%d, drawable %dx%d\n",
++        operationMode == AppletOperationMode_Console ? "docked" : "handheld", width, height, scale, ww, wh, dw, dh);
++#endif
+ }
+ 
+ void platformGetMousePos(double *xPos, double *yPos) {
 diff --git a/src/cli/args.c b/src/cli/args.c
 index 92eab79..53bbb70 100644
 --- a/src/cli/args.c
@@ -353,7 +371,7 @@ index 0000000..b1a0f17
 +// or -1 if the file could not be loaded.
 +int32_t FontAdd_load(struct Runner* runner, const char* name, float size, bool bold, bool italic, int32_t first, int32_t last);
 diff --git a/src/gl/gl_renderer.c b/src/gl/gl_renderer.c
-index 5077594..3b4d4de 100644
+index 5077594..bf19d21 100644
 --- a/src/gl/gl_renderer.c
 +++ b/src/gl/gl_renderer.c
 @@ -1290,7 +1290,10 @@ bool GLRenderer_ensureTextureLoaded(GLRenderer* gl, uint32_t pageId) {
@@ -367,6 +385,75 @@ index 5077594..3b4d4de 100644
  
      free(pixels);
  
+@@ -3054,6 +3057,60 @@ static int32_t glCreateSpriteFromSurface(Renderer* renderer, int32_t surfaceID,
+     return (int32_t) spriteIndex;
+ }
+ 
++static int32_t glCreateSpriteFromPixels(Renderer* renderer, int32_t w, int32_t h, const uint8_t* rgba) {
++    GLRenderer* gl = (GLRenderer*) renderer;
++    DataWin* dw = renderer->dataWin;
++    if (0 >= w || 0 >= h || rgba == nullptr) return -1;
++    flushBatch(gl);
++
++    GLuint newTexId;
++    glGenTextures(1, &newTexId);
++    glBindTexture(GL_TEXTURE_2D, newTexId);
++    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
++    while (glGetError() != GL_NO_ERROR) {}
++    glTexImage2D(GL_TEXTURE_2D, 0, gl->textureFormat, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
++    GLenum err = glGetError();
++    if (err != GL_NO_ERROR) logWarn("GL: uploading a %dx%d dynamic texture failed with GL error 0x%04X\n", w, h, (unsigned) err);
++    GLCommon_applyTexFilter(renderer->texFilter);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++    uint32_t pageId = findOrAllocTexturePageSlot(gl);
++    gl->glTextures[pageId] = newTexId;
++    gl->textureWidths[pageId] = w;
++    gl->textureHeights[pageId] = h;
++    gl->textureLoaded[pageId] = true;
++
++    uint32_t tpagIndex = findOrAllocTpagSlot(dw, gl->originalTpagCount);
++    TexturePageItem* tpag = &dw->tpag.items[tpagIndex];
++    tpag->sourceX = 0;
++    tpag->sourceY = 0;
++    tpag->sourceWidth = (uint16_t) w;
++    tpag->sourceHeight = (uint16_t) h;
++    tpag->targetX = 0;
++    tpag->targetY = 0;
++    tpag->targetWidth = (uint16_t) w;
++    tpag->targetHeight = (uint16_t) h;
++    tpag->boundingWidth = (uint16_t) w;
++    tpag->boundingHeight = (uint16_t) h;
++    tpag->texturePageId = (int16_t) pageId;
++
++    uint32_t spriteIndex = DataWin_allocSpriteSlot(dw, gl->originalSpriteCount);
++    Sprite* sprite = &dw->sprt.sprites[spriteIndex];
++    sprite->width = (uint32_t) w;
++    sprite->height = (uint32_t) h;
++    sprite->originX = 0;
++    sprite->originY = 0;
++    sprite->textureCount = 1;
++    sprite->tpagIndices = (int32_t *)safeMalloc(sizeof(int32_t));
++    sprite->tpagIndices[0] = (int32_t) tpagIndex;
++    sprite->maskCount = 0;
++    sprite->masks = nullptr;
++
++    logInfo("GL: Created dynamic sprite %u (%dx%d) from pixels\n", spriteIndex, w, h);
++    return (int32_t) spriteIndex;
++}
++
+ static void glDeleteSprite(Renderer* renderer, int32_t spriteIndex) {
+     GLRenderer* gl = (GLRenderer*) renderer;
+     DataWin* dw = renderer->dataWin;
+@@ -3542,6 +3599,7 @@ Renderer* GLRenderer_create(void) {
+     glVtable.flush = glRendererFlush;
+     glVtable.clearScreen = glClearScreen;
+     glVtable.createSpriteFromSurface = glCreateSpriteFromSurface;
++    glVtable.createSpriteFromPixels = glCreateSpriteFromPixels;
+     glVtable.deleteSprite = glDeleteSprite;
+     glVtable.gpuGetBlendFactors = glGpuGetBlendFactors;
+     glVtable.gpuGetBlendMode = glGpuGetBlendMode;
 diff --git a/src/gl_common/gl_common.c b/src/gl_common/gl_common.c
 index 0ad4e97..05c2e50 100644
 --- a/src/gl_common/gl_common.c
@@ -422,7 +509,7 @@ index 51113da..a164779 100644
      if (!uncompressed) return nullptr;
  #ifdef USE_WUFFS_IMGDEC
 diff --git a/src/loop.c b/src/loop.c
-index 42ef176..50139a8 100644
+index 42ef176..333d8f9 100644
 --- a/src/loop.c
 +++ b/src/loop.c
 @@ -33,6 +33,10 @@
@@ -436,7 +523,32 @@ index 42ef176..50139a8 100644
  #include "default_font/default_font.h"
  #if (defined(ENABLE_LEGACY_GL) || defined(ENABLE_MODERN_GL) || ((defined(USE_GLFW3) || defined(USE_GLFW2)) && defined(ENABLE_SW_RENDERER))) && \
      !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(PLATFORM_PS3) && !defined(PLATFORM_VITA) && !defined(__SWITCH__)
-@@ -998,6 +1002,16 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -599,6 +603,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+         options.eagerlyLoadedRooms = args.eagerRooms;
+         DataWin* dataWin = DataWin_parse(currentDataWinPath, options);
+ 
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory("data.win parsed");
++#endif
+         Gen8* gen8 = &dataWin->gen8;
+         logInfo("Loaded \"%s\" (%d) successfully! [WAD Version %u / GameMaker version %u.%u.%u.%u]\n", gen8->name, gen8->gameID, gen8->wadVersion, dataWin->detectedFormat.major, dataWin->detectedFormat.minor, dataWin->detectedFormat.release, dataWin->detectedFormat.build);
+ 
+@@ -975,8 +982,14 @@ int loop(CommandLineArgs args, const char *argv0) {
+ #endif
+         }
+ 
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory("renderer and audio ready");
++#endif
+         // Initialize the runner
+         Runner* runner = Runner_create(dataWin, vm, renderer, (FileSystem*) overlayFs, audioSystem, args.seed);
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory("runner created");
++#endif
+ 
+         if (!args.lazyTextures) {
+             repeat(runner->dataWin->txtr.count, i) {
+@@ -998,6 +1011,16 @@ int loop(CommandLineArgs args, const char *argv0) {
          runner->setWindowTitle = platformSetWindowTitle;
          Runner_setGameArgs(runner, currentGameArgs, (int32_t) arrlen(currentGameArgs));
          platformInitFunctions(runner);
@@ -453,7 +565,7 @@ index 42ef176..50139a8 100644
  
          // Set up input recording/playback (both can be active: playback then continue recording)
          if (args.playbackInputsPath != nullptr) {
-@@ -1329,6 +1343,32 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1329,6 +1352,40 @@ int loop(CommandLineArgs args, const char *argv0) {
                      runner->usingAppSurface = true;
                  }
  
@@ -483,10 +595,18 @@ index 42ef176..50139a8 100644
 +                    }
 +                }
 +
++                {
++                    static int32_t loggedFbW = -1, loggedFbH = -1, loggedAppW = -1, loggedAppH = -1;
++                    if (loggedFbW != fbWidth || loggedFbH != fbHeight || loggedAppW != runner->applicationWidth || loggedAppH != runner->applicationHeight) {
++                        loggedFbW = fbWidth; loggedFbH = fbHeight; loggedAppW = runner->applicationWidth; loggedAppH = runner->applicationHeight;
++                        logInfo("Frame: framebuffer %dx%d, application surface %dx%d, GUI %dx%d\n", fbWidth, fbHeight,
++                            runner->applicationWidth, runner->applicationHeight, runner->guiWidth, runner->guiHeight);
++                    }
++                }
                  int32_t gameW = runner->applicationWidth;
                  int32_t gameH = runner->applicationHeight;
  
-@@ -1372,6 +1412,7 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1372,6 +1429,7 @@ int loop(CommandLineArgs args, const char *argv0) {
                  renderer->vtable->endFrameInit(renderer);
                  Runner_drawPost(runner, fbWidth, fbHeight);
                  renderer->vtable->endFrameEnd(renderer);
@@ -508,10 +628,10 @@ index 221170b..07953ce 100644
      StringBooleanEntry* eagerRooms; // stb_ds string-keyed set of room names
 diff --git a/src/port_overrides.c b/src/port_overrides.c
 new file mode 100644
-index 0000000..944617d
+index 0000000..6f5f97f
 --- /dev/null
 +++ b/src/port_overrides.c
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,396 @@
 +#include "port_overrides.h"
 +
 +#include <stdio.h>
@@ -559,6 +679,14 @@ index 0000000..944617d
 +static int32_t uploadRgba(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba, int32_t* outSprite) {
 +    if (outSprite) *outSprite = -1;
 +    if (renderer == nullptr || renderer->vtable == nullptr || 0 >= width || 0 >= height) return -1;
++    if (renderer->vtable->createSpriteFromPixels != nullptr) {
++        int32_t direct = renderer->vtable->createSpriteFromPixels(renderer, width, height, rgba);
++        if (0 > direct) return -1;
++        Sprite* sprite = &renderer->dataWin->sprt.sprites[direct];
++        if (sprite->textureCount == 0) return -1;
++        if (outSprite) *outSprite = direct;
++        return sprite->tpagIndices[0];
++    }
 +    if (renderer->vtable->createSurface == nullptr || renderer->vtable->surfaceUploadPixels == nullptr ||
 +        renderer->vtable->createSpriteFromSurface == nullptr || renderer->vtable->surfaceFree == nullptr) {
 +        return -1;
@@ -956,6 +1084,19 @@ index 35a2b46..a398bef 100644
  } Random;
  
  void Random_setSeed(Random* m, uint32_t seed);
+diff --git a/src/renderer.h b/src/renderer.h
+index ae09f7d..fc0028d 100644
+--- a/src/renderer.h
++++ b/src/renderer.h
+@@ -169,6 +169,8 @@ typedef struct {
+     void (*flush)(Renderer* renderer);
+     void (*clearScreen)(Renderer* renderer, uint32_t color, float alpha);
+     int32_t (*createSpriteFromSurface)(Renderer* renderer, int32_t surfaceID, int32_t x, int32_t y, int32_t w, int32_t h, bool removeback, bool smooth, int32_t xorig, int32_t yorig);
++    // Optional: creates a one-frame dynamic sprite straight from RGBA pixels (no render-target round trip).
++    int32_t (*createSpriteFromPixels)(Renderer* renderer, int32_t w, int32_t h, const uint8_t* rgba);
+     void (*deleteSprite)(Renderer* renderer, int32_t spriteIndex);
+     BlendFactors (*gpuGetBlendFactors)(Renderer* renderer);
+     int32_t (*gpuGetBlendMode)(Renderer* renderer);
 diff --git a/src/runner.c b/src/runner.c
 index ac392b8..f7e6381 100644
 --- a/src/runner.c
@@ -1039,10 +1180,14 @@ index 9b4d009..b357bec 100644
      if (usingRomfs) romfsExit();
      fsdevUnmountAll();
 diff --git a/src/switch/switch_input.c b/src/switch/switch_input.c
-index e08b030..6a40b57 100644
+index e08b030..5716625 100644
 --- a/src/switch/switch_input.c
 +++ b/src/switch/switch_input.c
-@@ -4,6 +4,7 @@
+@@ -1,9 +1,11 @@
+ #include <stdio.h>
++#include <malloc.h>
+ #include <string.h>
+ #include <switch.h>
  
  #include "switch_input.h"
  #include "platformdefs.h"
@@ -1050,7 +1195,7 @@ index e08b030..6a40b57 100644
  
  #define SWITCH_NPAD_COUNT 8
  
-@@ -11,8 +12,11 @@ static PadState pads[SWITCH_NPAD_COUNT];
+@@ -11,8 +13,11 @@ static PadState pads[SWITCH_NPAD_COUNT];
  static bool initialized = false;
  
  static void mapLibnxToGml(GamepadSlot* slot, PadState* pad, u64 cur) {
@@ -1064,7 +1209,7 @@ index e08b030..6a40b57 100644
      if (cur & HidNpadButton_Y) slot->buttonDown[2] = true;
      if (cur & HidNpadButton_X) slot->buttonDown[3] = true;
      if (cur & HidNpadButton_L) slot->buttonDown[4] = true;
-@@ -72,6 +76,14 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
+@@ -72,6 +77,14 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
  
      if (!appletMainLoop()) return true;
  
@@ -1079,17 +1224,20 @@ index e08b030..6a40b57 100644
      int connectedCount = 0;
      for (int i = 0; SWITCH_NPAD_COUNT > i; i++) {
          padUpdate(&pads[i]);
-@@ -89,3 +101,12 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
+@@ -89,3 +102,15 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
  
      return false;
  }
 +
 +void SwitchDiag_logMemory(const char* tag) {
-+    u64 total = 0, used = 0;
++    // libnx reserves all available memory as the heap at start-up, so the process counters always read "full";
++    // malloc's own statistics show what is really in use.
++    struct mallinfo mi = mallinfo();
++    u64 total = 0;
 +    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
-+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
 +    AppletType type = appletGetAppletType();
-+    logInfo("Memory [%s]: used %llu MB of %llu MB (%s)\n", tag, (unsigned long long) (used >> 20), (unsigned long long) (total >> 20),
++    logInfo("Memory [%s]: malloc in use %u MB, heap arena %u MB, process limit %llu MB (%s)\n", tag,
++        (unsigned) (mi.uordblks >> 20), (unsigned) (mi.arena >> 20), (unsigned long long) (total >> 20),
 +        type == AppletType_Application || type == AppletType_SystemApplication ? "application mode" : "applet mode");
 +}
 diff --git a/src/switch/switch_input.h b/src/switch/switch_input.h
