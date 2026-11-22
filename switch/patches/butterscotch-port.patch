@@ -352,6 +352,21 @@ index 0000000..b1a0f17
 +// glyph atlas and registers it as a regular font. Returns the new font index,
 +// or -1 if the file could not be loaded.
 +int32_t FontAdd_load(struct Runner* runner, const char* name, float size, bool bold, bool italic, int32_t first, int32_t last);
+diff --git a/src/gl/gl_renderer.c b/src/gl/gl_renderer.c
+index 5077594..3b4d4de 100644
+--- a/src/gl/gl_renderer.c
++++ b/src/gl/gl_renderer.c
+@@ -1290,7 +1290,10 @@ bool GLRenderer_ensureTextureLoaded(GLRenderer* gl, uint32_t pageId) {
+     gl->textureHeights[pageId] = h;
+ 
+     glBindTexture(GL_TEXTURE_2D, gl->glTextures[pageId]);
++    while (glGetError() != GL_NO_ERROR) {}
+     glTexImage2D(GL_TEXTURE_2D, 0, gl->textureFormat, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
++    GLenum uploadError = glGetError();
++    if (uploadError != GL_NO_ERROR) logWarn("GL: uploading TXTR page %u (%dx%d) failed with GL error 0x%04X\n", pageId, w, h, (unsigned) uploadError);
+ 
+     free(pixels);
+ 
 diff --git a/src/gl_common/gl_common.c b/src/gl_common/gl_common.c
 index 0ad4e97..05c2e50 100644
 --- a/src/gl_common/gl_common.c
@@ -389,30 +404,56 @@ index bc4aec6..ae9b8c5 100644
  void GLCommon_computeLetterbox(int32_t gameW, int32_t gameH, int32_t windowW, int32_t windowH, int32_t* outStartX, int32_t* outStartY, int32_t* outEndX, int32_t* outEndY);
  
  // Blits the given FBO (typically the application_surface) into hostFbo with letterboxing (hostFbo 0 == the window).
+diff --git a/src/image/image_decoder.c b/src/image/image_decoder.c
+index 51113da..a164779 100644
+--- a/src/image/image_decoder.c
++++ b/src/image/image_decoder.c
+@@ -170,6 +170,12 @@ static uint8_t* decodeBz2Qoi(const uint8_t* blob, size_t blobSize, bool gm2022_5
+ 
+     // Upper bound on decompressed QOI: header size + width*height*5 pixel data.
+     size_t uncompressedCapacity = QOI_HEADER_SIZE + (size_t) width * (size_t) height * 5;
++    // GameMaker 2022.5+ stores the exact decompressed size: allocate just that, which keeps peak memory
++    // low when big texture pages are loaded on memory-limited platforms (Switch in applet mode).
++    if (gm2022_5) {
++        size_t declared = (size_t) blob[8] | ((size_t) blob[9] << 8) | ((size_t) blob[10] << 16) | ((size_t) blob[11] << 24);
++        if (declared >= QOI_HEADER_SIZE && uncompressedCapacity > declared) uncompressedCapacity = declared;
++    }
+     uint8_t* uncompressed = (uint8_t*) malloc(uncompressedCapacity);
+     if (!uncompressed) return nullptr;
+ #ifdef USE_WUFFS_IMGDEC
 diff --git a/src/loop.c b/src/loop.c
-index 42ef176..496ef57 100644
+index 42ef176..50139a8 100644
 --- a/src/loop.c
 +++ b/src/loop.c
-@@ -33,6 +33,7 @@
+@@ -33,6 +33,10 @@
  #include "runner.h"
  #include "input_recording.h"
  #include "debug_overlay.h"
 +#include "port_overrides.h"
++#ifdef PLATFORM_SWITCH
++#include "switch_input.h"
++#endif
  #include "default_font/default_font.h"
  #if (defined(ENABLE_LEGACY_GL) || defined(ENABLE_MODERN_GL) || ((defined(USE_GLFW3) || defined(USE_GLFW2)) && defined(ENABLE_SW_RENDERER))) && \
      !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(PLATFORM_PS3) && !defined(PLATFORM_VITA) && !defined(__SWITCH__)
-@@ -998,6 +999,10 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -998,6 +1002,16 @@ int loop(CommandLineArgs args, const char *argv0) {
          runner->setWindowTitle = platformSetWindowTitle;
          Runner_setGameArgs(runner, currentGameArgs, (int32_t) arrlen(currentGameArgs));
          platformInitFunctions(runner);
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory("textures loaded");
++#endif
 +        PortOverrides_load(runner);
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory("port assets loaded");
++#endif
 +#if defined(ENABLE_LEGACY_GL) || defined(ENABLE_MODERN_GL)
 +        GLCommon_letterboxNoUpscale = args.nativeResolution;
 +#endif
  
          // Set up input recording/playback (both can be active: playback then continue recording)
          if (args.playbackInputsPath != nullptr) {
-@@ -1329,6 +1334,32 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1329,6 +1343,32 @@ int loop(CommandLineArgs args, const char *argv0) {
                      runner->usingAppSurface = true;
                  }
  
@@ -445,7 +486,7 @@ index 42ef176..496ef57 100644
                  int32_t gameW = runner->applicationWidth;
                  int32_t gameH = runner->applicationHeight;
  
-@@ -1372,6 +1403,7 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1372,6 +1412,7 @@ int loop(CommandLineArgs args, const char *argv0) {
                  renderer->vtable->endFrameInit(renderer);
                  Runner_drawPost(runner, fbWidth, fbHeight);
                  renderer->vtable->endFrameEnd(renderer);
@@ -467,10 +508,10 @@ index 221170b..07953ce 100644
      StringBooleanEntry* eagerRooms; // stb_ds string-keyed set of room names
 diff --git a/src/port_overrides.c b/src/port_overrides.c
 new file mode 100644
-index 0000000..9dce19a
+index 0000000..944617d
 --- /dev/null
 +++ b/src/port_overrides.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,388 @@
 +#include "port_overrides.h"
 +
 +#include <stdio.h>
@@ -501,7 +542,9 @@ index 0000000..9dce19a
 +} BorderCondition;
 +
 +typedef struct {
-+    int32_t tpagIndex;
++    char* imagePath;    // loaded on first use, see ensureBorderLoaded
++    int32_t tpagIndex;  // -1 = not loaded, -2 = failed to load
++    int32_t spriteIndex;
 +    int32_t width, height;
 +    char* room; // nullptr = any room
 +    BorderCondition conditions[PORT_MAX_CONDITIONS];
@@ -513,7 +556,8 @@ index 0000000..9dce19a
 +static int32_t previousBorder = -1;
 +static int32_t fadeFrame = PORT_BORDER_FADE_FRAMES;
 +
-+int32_t PortOverrides_uploadRgba(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba) {
++static int32_t uploadRgba(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba, int32_t* outSprite) {
++    if (outSprite) *outSprite = -1;
 +    if (renderer == nullptr || renderer->vtable == nullptr || 0 >= width || 0 >= height) return -1;
 +    if (renderer->vtable->createSurface == nullptr || renderer->vtable->surfaceUploadPixels == nullptr ||
 +        renderer->vtable->createSpriteFromSurface == nullptr || renderer->vtable->surfaceFree == nullptr) {
@@ -531,7 +575,12 @@ index 0000000..9dce19a
 +    if ((uint32_t) spriteIndex >= dw->sprt.count) return -1;
 +    Sprite* sprite = &dw->sprt.sprites[spriteIndex];
 +    if (sprite->textureCount == 0) return -1;
++    if (outSprite) *outSprite = spriteIndex;
 +    return sprite->tpagIndices[0];
++}
++
++int32_t PortOverrides_uploadRgba(Renderer* renderer, int32_t width, int32_t height, const uint8_t* rgba) {
++    return uploadRgba(renderer, width, height, rgba, nullptr);
 +}
 +
 +static char* joinPath(const char* dir, const char* file) {
@@ -541,7 +590,7 @@ index 0000000..9dce19a
 +    return out;
 +}
 +
-+static int32_t loadImage(Runner* runner, const char* path, int32_t* outW, int32_t* outH) {
++static int32_t loadImage(Runner* runner, const char* path, int32_t* outW, int32_t* outH, int32_t* outSprite) {
 +    FileSystem* fs = runner->fileSystem;
 +    uint8_t* data = nullptr;
 +    int32_t size = 0;
@@ -557,7 +606,7 @@ index 0000000..9dce19a
 +        logWarn("Port: could not decode %s\n", path);
 +        return -1;
 +    }
-+    int32_t tpag = PortOverrides_uploadRgba(runner->renderer, w, h, rgba);
++    int32_t tpag = uploadRgba(runner->renderer, w, h, rgba, outSprite);
 +    free(rgba);
 +    if (outW) *outW = w;
 +    if (outH) *outH = h;
@@ -652,9 +701,21 @@ index 0000000..9dce19a
 +                int frame = atoi(JsonReader_getJsonKeyByIndex(frames, f));
 +                JsonValue* file = JsonReader_getJsonValueByIndex(frames, f);
 +                if (0 > frame || (uint32_t) frame >= dw->sprt.sprites[spriteIndex].textureCount || file == nullptr || !JsonReader_isString(file)) continue;
-+                char* path = joinPath(dir, JsonReader_getString(file));
-+                int32_t tpag = loadImage(runner, path, nullptr, nullptr);
-+                free(path);
++                const char* fileName = JsonReader_getString(file);
++                int32_t tpag = -1;
++                for (int prev = 0; f > prev; prev++) {
++                    JsonValue* prevFile = JsonReader_getJsonValueByIndex(frames, prev);
++                    if (prevFile != nullptr && JsonReader_isString(prevFile) && strcmp(JsonReader_getString(prevFile), fileName) == 0) {
++                        int prevFrame = atoi(JsonReader_getJsonKeyByIndex(frames, prev));
++                        if (0 <= prevFrame && (uint32_t) prevFrame < dw->sprt.sprites[spriteIndex].textureCount) tpag = dw->sprt.sprites[spriteIndex].tpagIndices[prevFrame];
++                        break;
++                    }
++                }
++                if (0 > tpag) {
++                    char* path = joinPath(dir, fileName);
++                    tpag = loadImage(runner, path, nullptr, nullptr, nullptr);
++                    free(path);
++                }
 +                if (0 > tpag) continue;
 +                dw->sprt.sprites[spriteIndex].tpagIndices[frame] = tpag;
 +                framesReplaced++;
@@ -673,10 +734,9 @@ index 0000000..9dce19a
 +            if (image == nullptr || !JsonReader_isString(image)) continue;
 +            Border b;
 +            memset(&b, 0, sizeof(b));
-+            char* path = joinPath(dir, JsonReader_getString(image));
-+            b.tpagIndex = loadImage(runner, path, &b.width, &b.height);
-+            free(path);
-+            if (0 > b.tpagIndex) continue;
++            b.imagePath = joinPath(dir, JsonReader_getString(image));
++            b.tpagIndex = -1;
++            b.spriteIndex = -1;
 +            JsonValue* room = JsonReader_getJsonValueByKey(entry, "room");
 +            b.room = (room != nullptr && JsonReader_isString(room)) ? safeStrdup(JsonReader_getString(room)) : nullptr;
 +            JsonValue* when = JsonReader_getJsonValueByKey(entry, "when");
@@ -712,6 +772,28 @@ index 0000000..9dce19a
 +    applyManifest(runner, "port", stringsDone, false, true);
 +    applyManifest(runner, "lang", stringsDone, false, true);
 +    free(stringsDone);
++}
++
++// Borders are full-screen images, so only the active one and the one fading out are kept in memory.
++static bool ensureBorderLoaded(Runner* runner, int32_t index) {
++    if (0 > index) return false;
++    Border* b = &borders[index];
++    if (b->tpagIndex == -1) {
++        b->tpagIndex = loadImage(runner, b->imagePath, &b->width, &b->height, &b->spriteIndex);
++        if (0 > b->tpagIndex) b->tpagIndex = -2;
++    }
++    return b->tpagIndex >= 0;
++}
++
++static void unloadUnusedBorders(Runner* runner) {
++    int32_t count = (int32_t) arrlen(borders);
++    for (int32_t i = 0; count > i; i++) {
++        Border* b = &borders[i];
++        if (i == activeBorder || i == previousBorder || 0 > b->tpagIndex || 0 > b->spriteIndex) continue;
++        if (runner->renderer->vtable->deleteSprite != nullptr) runner->renderer->vtable->deleteSprite(runner->renderer, b->spriteIndex);
++        b->tpagIndex = -1;
++        b->spriteIndex = -1;
++    }
 +}
 +
 +static bool borderMatches(Runner* runner, const Border* b) {
@@ -774,8 +856,16 @@ index 0000000..9dce19a
 +        previousBorder = activeBorder;
 +        activeBorder = chosen;
 +        fadeFrame = previousBorder >= 0 ? 0 : PORT_BORDER_FADE_FRAMES;
++        ensureBorderLoaded(runner, activeBorder);
++        unloadUnusedBorders(runner);
 +    }
-+    if (0 > activeBorder && 0 > previousBorder) return;
++    if (PORT_BORDER_FADE_FRAMES <= fadeFrame && previousBorder >= 0) {
++        previousBorder = -1;
++        unloadUnusedBorders(runner);
++    }
++    bool activeReady = 0 <= activeBorder && borders[activeBorder].tpagIndex >= 0;
++    bool previousReady = 0 <= previousBorder && borders[previousBorder].tpagIndex >= 0;
++    if (!activeReady && !previousReady) return;
 +
 +    // Same letterbox math as the renderer, so the border meets the game edge exactly.
 +    int32_t effW, effH;
@@ -799,11 +889,11 @@ index 0000000..9dce19a
 +    if (renderer->vtable->gpuSetTexFilter != nullptr) renderer->vtable->gpuSetTexFilter(renderer, true);
 +
 +    float t = (float) fadeFrame / (float) PORT_BORDER_FADE_FRAMES;
-+    if (previousBorder >= 0 && 1.0f > t) {
++    if (previousReady && 1.0f > t) {
 +        drawBorderImage(renderer, &borders[previousBorder], fbWidth, fbHeight, gx0, gy0, gx1, gy1, 1.0f);
 +    }
-+    if (activeBorder >= 0) {
-+        drawBorderImage(renderer, &borders[activeBorder], fbWidth, fbHeight, gx0, gy0, gx1, gy1, previousBorder >= 0 ? (t > 1.0f ? 1.0f : t) : 1.0f);
++    if (activeReady) {
++        drawBorderImage(renderer, &borders[activeBorder], fbWidth, fbHeight, gx0, gy0, gx1, gy1, previousReady ? (t > 1.0f ? 1.0f : t) : 1.0f);
 +    }
 +    if (PORT_BORDER_FADE_FRAMES > fadeFrame) fadeFrame++;
 +
@@ -866,6 +956,51 @@ index 35a2b46..a398bef 100644
  } Random;
  
  void Random_setSeed(Random* m, uint32_t seed);
+diff --git a/src/runner.c b/src/runner.c
+index ac392b8..f7e6381 100644
+--- a/src/runner.c
++++ b/src/runner.c
+@@ -1,3 +1,6 @@
++#ifdef PLATFORM_SWITCH
++#include "switch_input.h"
++#endif
+ #include "runner.h"
+ #include "vm_builtins.h"
+ #include "physics/physics.h"
+@@ -4244,6 +4247,9 @@ void Runner_handlePendingRoomChange(Runner* runner) {
+         const char* newRoomName = runner->dataWin->room.rooms[newRoomIndex].name;
+ 
+         logInfo("Room changed: %s (room %d) -> %s (room %d)\n", oldRoomName, oldRoomIndex, newRoomName, newRoomIndex);
++#ifdef PLATFORM_SWITCH
++        SwitchDiag_logMemory(newRoomName != nullptr ? newRoomName : "room");
++#endif
+ 
+         // If the old room is persistent, save its instance and visual state
+         if (oldRoom->persistent) {
+diff --git a/src/switch/log.c b/src/switch/log.c
+index 1ad3d18..745f2a1 100644
+--- a/src/switch/log.c
++++ b/src/switch/log.c
+@@ -35,6 +35,19 @@ void platformLog(const logType type, const char *format, va_list va) {
+     buffer[sizeof(buffer) - 1] = '\0';
+     
+     printf("%s%s%s", colourPrefix, buffer, ANSI_COLOUR_CODE_RESET);
++
++    // Also keep a log file next to the saves (first 4 MB of each run), flushed per line so it survives a crash.
++    static FILE* logFile = NULL;
++    static bool logFileTried = false;
++    static long logFileBytes = 0;
++    if (!logFileTried) {
++        logFileTried = true;
++        logFile = fopen("sdmc:/switch/spamton_subplot/log.txt", "w");
++    }
++    if (logFile != NULL && 4L * 1024 * 1024 > logFileBytes) {
++        logFileBytes += (long) fprintf(logFile, "%s", buffer);
++        fflush(logFile);
++    }
+     
+     svcOutputDebugString(buffer, strlen(buffer));
+ }
 diff --git a/src/switch/main.c b/src/switch/main.c
 index 9b4d009..b357bec 100644
 --- a/src/switch/main.c
@@ -904,10 +1039,18 @@ index 9b4d009..b357bec 100644
      if (usingRomfs) romfsExit();
      fsdevUnmountAll();
 diff --git a/src/switch/switch_input.c b/src/switch/switch_input.c
-index e08b030..84c21a9 100644
+index e08b030..6a40b57 100644
 --- a/src/switch/switch_input.c
 +++ b/src/switch/switch_input.c
-@@ -11,8 +11,11 @@ static PadState pads[SWITCH_NPAD_COUNT];
+@@ -4,6 +4,7 @@
+ 
+ #include "switch_input.h"
+ #include "platformdefs.h"
++#include "log.h"
+ 
+ #define SWITCH_NPAD_COUNT 8
+ 
+@@ -11,8 +12,11 @@ static PadState pads[SWITCH_NPAD_COUNT];
  static bool initialized = false;
  
  static void mapLibnxToGml(GamepadSlot* slot, PadState* pad, u64 cur) {
@@ -921,7 +1064,7 @@ index e08b030..84c21a9 100644
      if (cur & HidNpadButton_Y) slot->buttonDown[2] = true;
      if (cur & HidNpadButton_X) slot->buttonDown[3] = true;
      if (cur & HidNpadButton_L) slot->buttonDown[4] = true;
-@@ -72,6 +75,14 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
+@@ -72,6 +76,14 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
  
      if (!appletMainLoop()) return true;
  
@@ -936,6 +1079,31 @@ index e08b030..84c21a9 100644
      int connectedCount = 0;
      for (int i = 0; SWITCH_NPAD_COUNT > i; i++) {
          padUpdate(&pads[i]);
+@@ -89,3 +101,12 @@ bool SwitchInput_handleEvents(struct Runner* runner) {
+ 
+     return false;
+ }
++
++void SwitchDiag_logMemory(const char* tag) {
++    u64 total = 0, used = 0;
++    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
++    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
++    AppletType type = appletGetAppletType();
++    logInfo("Memory [%s]: used %llu MB of %llu MB (%s)\n", tag, (unsigned long long) (used >> 20), (unsigned long long) (total >> 20),
++        type == AppletType_Application || type == AppletType_SystemApplication ? "application mode" : "applet mode");
++}
+diff --git a/src/switch/switch_input.h b/src/switch/switch_input.h
+index 12d54ba..f99ced7 100644
+--- a/src/switch/switch_input.h
++++ b/src/switch/switch_input.h
+@@ -7,4 +7,7 @@ struct Runner;
+ 
+ bool SwitchInput_handleEvents(struct Runner* runner);
+ 
++// Logs process memory usage (total/used) with a tag, for diagnosing problems on hardware.
++void SwitchDiag_logMemory(const char* tag);
++
+ #endif
 diff --git a/src/vm_builtins.c b/src/vm_builtins.c
 index 7086f3b..b788640 100644
 --- a/src/vm_builtins.c
