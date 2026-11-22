@@ -57,6 +57,7 @@ jobs:
         run: |
           git clone -q https://github.com/xitrix/hacbrewpack /tmp/hacbrewpack
           git -C /tmp/hacbrewpack checkout -q 745b16ecfc9ce055743067d200572204cb2aac6c
+          cp /tmp/hacbrewpack/config.mk.template /tmp/hacbrewpack/config.mk
           make -s -C /tmp/hacbrewpack
           pip3 install -q --break-system-packages nsz==5.0.0
           umask 077
