@@ -91,7 +91,16 @@ mkdir -p "$HOME/.switch"
 if [ ! -f "$HOME/.switch/prod.keys" ] || ! cmp -s "$KEYS" "$HOME/.switch/prod.keys"; then
     cp "$KEYS" "$HOME/.switch/prod.keys"
 fi
+# nsz names its output after the title ID and version, which both variants share,
+# so compress each one into its own folder and rename it after the NSP.
 for nsp in "$DIST"/SpamtonSubplot*"[$TITLE_ID][v0].nsp"; do
-    "$NSZ" -C -o "$DIST" "$nsp"
+    out="$WORK/nsz-out"
+    rm -rf "$out"
+    mkdir -p "$out"
+    "$NSZ" -C -o "$out" "$nsp"
+    built="$(find "$out" -maxdepth 1 -name '*.nsz' | head -n 1)"
+    [ -n "$built" ] || { echo "error: nsz produced nothing for $nsp" >&2; exit 1; }
+    mv "$built" "${nsp%.nsp}.nsz"
+    chmod 644 "${nsp%.nsp}.nsz"
 done
 ls -la "$DIST"
