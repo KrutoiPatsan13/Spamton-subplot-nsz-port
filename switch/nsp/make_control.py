@@ -27,6 +27,7 @@ for i in range(len(LANGUAGES)):
 nacp[0x3025] = 0                                        # StartupUserAccount: none, the game saves to the SD card
 struct.pack_into("<I", nacp, 0x302C, (1 << len(LANGUAGES)) - 1)  # SupportedLanguageFlag: all languages
 nacp[0x3035] = 2                                        # VideoCapture: enabled
+nacp[0x30F1] = 0                                        # LogoHandling: auto, the NCA carries logo/ (make_logo.py)
 struct.pack_into("<qq", nacp, 0x3080, 0, 0)             # no user account save data
 
 open(nacp_path, "wb").write(nacp)

@@ -41,6 +41,8 @@ mkdir -p "$PKG/exefs" "$PKG/control"
 "$TOOLS/npdmtool" "$ROOT/switch/nsp/npdm.json" "$PKG/exefs/main.npdm" 2>/dev/null
 "$TOOLS/nacptool" --create "$APP_NAME" "$APP_PUBLISHER" "$APP_VERSION" "$PKG/control/control.nacp" --titleid="$TITLE_ID"
 python3 "$ROOT/switch/nsp/make_control.py" "$PKG/control" "$ROOT/switch/icon.jpg" "$APP_NAME" "$APP_PUBLISHER"
+# Startup logo (made by switch/nsp/make_logo.py).
+cp -r "$ROOT/switch/nsp/logo" "$PKG/logo"
 
 # RomFS variants: English as shipped, Russian with the translation pack baked in
 # (the port reads lang/ from the RomFS when the SD card has none).
@@ -54,7 +56,7 @@ mkdir -p "$DIST"
 KIT="$WORK/nsp-kit/SpamtonSubplot-nsp-kit"
 rm -rf "$WORK/nsp-kit"
 mkdir -p "$KIT"
-cp -r "$PKG/exefs" "$PKG/control" "$PKG/romfs" "$KIT/"
+cp -r "$PKG/exefs" "$PKG/control" "$PKG/logo" "$PKG/romfs" "$KIT/"
 cp -r "$ROOT/russian/lang" "$KIT/russian_lang"
 cp "$ROOT/switch/nsp/make_nsz.bat" "$ROOT/switch/nsp/make_nsz_ru.bat" "$ROOT/switch/nsp/README.md" "$KIT/"
 rm -f "$DIST/SpamtonSubplot-nsp-kit.zip"
@@ -73,7 +75,9 @@ pack() {
     local tmp="$WORK/hbp$suffix"
     rm -rf "$tmp"
     mkdir -p "$tmp"
-    "$HACBREWPACK" -k "$KEYS" --titleid "$TITLE_ID" --keygeneration 1 --nologo \
+    # hacbrewpack sets LogoHandling to Auto in the NACP, so the program NCA must carry the logo section:
+    # without it (--nologo) the system applet manager (am) aborts with 2128-0007 on recent firmware.
+    "$HACBREWPACK" -k "$KEYS" --titleid "$TITLE_ID" --keygeneration 1 --logodir "$PKG/logo" \
         --exefsdir "$PKG/exefs" --romfsdir "$romfs" --controldir "$PKG/control" \
         --tempdir "$tmp/temp" --ncadir "$tmp/nca" --backupdir "$tmp/backup" --nspdir "$tmp/nsp"
     local nsp="$DIST/SpamtonSubplot$suffix [$TITLE_ID][v0].nsp"
